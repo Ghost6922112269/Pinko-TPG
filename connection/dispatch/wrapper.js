@@ -25,7 +25,7 @@ class ModWrapper {
 		this[kTimers] = new Set()
 		this[kSettings] = new Settings(path.join(dispatch.modManager.settingsDir, this.name + '.json'), this.name)
 
-		// Caali-proxy compatibility
+		// Toolbox compatibility
 		if(info._compat === 2) {
 			Object.defineProperties(this, {
 				activeTimeouts: {configurable: true, get() { return new Set([...this[kTimers]].filter(t => !t._repeat)) }},
@@ -36,22 +36,42 @@ class ModWrapper {
 						return dispatch.require['tera-game-state']
 					}
 					catch(e) {
-						log.error('Please install tera-game-state:\n    https://github.com/caali-hackerman/tera-game-state')
+						log.error('Please install tera-game-state:\n    https://github.com/tera-mods-forks/tera-game-state')
 						throw e
 					}
 				}},
 			})
 
+			const dispatchOverride = {
+				protocol: require('tera-data-parser').protocol,
+				moduleManager: {
+					get: name => dispatch.loadedMods.get(name),
+					isLoaded: name => this.isLoaded(name)
+				},
+				fromRaw: dispatch.parse,
+				toRaw: dispatch.serialize
+			}
+
+			let logAbuse = false
+			function checkLogAbuse(msg) {
+				if(logAbuse) return true
+				if(msg.includes('on an unsupported legacy version')) {
+					log.warn('This mod contains anti-features aimed at degrading user experience for tera-proxy users'
+						+ '\nPlease contact [ Pinkie Pie#7969 ] on Discord to report this issue')
+					return logAbuse = true
+				}
+			}
+
 			Object.assign(this, {
+				dispatch: new Proxy(dispatch, { get: (obj, key) => dispatchOverride[key] || obj[key] }),
+
 				info: info._compatInfo,
 				options: info._compatInfo.options,
 				niceName: info._compatInfo.options.niceName,
 				rootFolder: info._path,
-
-				manager: {
-					get: name => dispatch.loadedMods.get(name),
-					isLoaded: name => this.isLoaded(name)
-				},
+				isClassic: this.patchVersion < 28,
+				platform: this.patchVersion < 28 ? 'classic' : 'pc',
+				manager: dispatchOverride.moduleManager,
 
 				// Timers
 				clearAllTimeouts() { for(let t of this[kTimers]) if(!t._repeat) this.clearTimeout(t) },
@@ -63,9 +83,9 @@ class ModWrapper {
 				trySend(...args) { try { return this.send(...args) } catch(e) { return false } },
 
 				// Logging
-				log(msg, ...args) { console.log(`[${this.name}] ${msg}`, ...args) },
-				warn(msg, ...args) { console.log(`[${this.name}] Warning: ${msg}`, ...args) },
-				error(msg, ...args) { console.log(`[${this.name}] Error: ${msg}`, ...args) },
+				log(...msg) { msg = msg.join(' '); if(!checkLogAbuse(msg)) log.info(msg) },
+				warn(...msg) { msg = msg.join(' '); if(!checkLogAbuse(msg)) log.warn(msg) },
+				error(...msg) { msg = msg.join(' '); if(!checkLogAbuse(msg)) log.error(msg) },
 
 				// Settings
 				saveSettings() {}
@@ -83,7 +103,7 @@ class ModWrapper {
 					}
 				}
 				catch(e) {
-					console.log(`[caali-compat] Error migrating settings for "${this.name}"`)
+					console.log(`[compat] Error migrating settings for "${this.name}"`)
 					console.log(e)
 				}
 
@@ -92,12 +112,11 @@ class ModWrapper {
 					for(let t of this[kTimers]) this.clearTimeout(t)
 				})
 
-			// Workaround improper usage in NextGenSP
-			if(this.name === 'skill-prediction' || this.options.niceName === 'SP')
-				Object.assign(this, {
-					proxyAuthor: 'caali',
-					dispatch: new Proxy(dispatch, { get: (obj, key) => key === 'proxyAuthor' ? 'caali' : obj[key] }),
-				})
+			// Workaround improper usage
+			if(this.info.servers && this.info.servers.some(s =>
+				/^https:\/\/raw\.githubusercontent\.com\/(caali-hackerman|tera-toolbox(-mods)?|tera-shiraneko)\//i.test(s.toLowerCase())
+			))
+				dispatchOverride.proxyAuthor = this.proxyAuthor = 'caali'
 		}
 
 		if(info.reloadable) {
@@ -236,6 +255,9 @@ class ModWrapper {
 
 	toClient(...args) { return this.dispatch.write(false, ...args) }
 	toServer(...args) { return this.dispatch.write(true, ...args) }
+
+	parse(...args) { return this.dispatch.parse(...args) }
+	serialize(...args) { return this.dispatch.serialize(...args) }
 
 	parseSystemMessage(...args) { return this.dispatch.parseSystemMessage(...args) }
 	buildSystemMessage(...args) { return this.dispatch.buildSystemMessage(...args) }

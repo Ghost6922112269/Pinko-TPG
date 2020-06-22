@@ -4,13 +4,15 @@ const log = require('log')('mod-manager'),
 	fs = require('fs'),
 	path = require('path'),
 	Updater = require('updater'),
-	yauzl = require('yauzl')
+	yauzl = require('yauzl'),
+	compat = require('./compat')
 
 class ModManager {
 	constructor(opts) {
 		Object.assign(this, {
 			modsDir: opts.modsDir,
 			settingsDir: opts.settingsDir,
+			blacklist: opts.blacklist || (()=>{}),
 			autoUpdate: Boolean(opts.autoUpdate),
 			updater: new Updater(),
 			packages: new Map(),
@@ -261,9 +263,14 @@ class ModManager {
 		// Alias
 		pkg.author = pkg.authors[0]
 
-		if(isBlacklisted(pkg.name)) {
-			log.warn(`${pkg.name} is blacklisted and will not be loaded`)
-			return null
+		{
+			const blacklistReason = this.blacklist(pkg)
+			if(blacklistReason) {
+				log.warn(`${log.color('1', pkg.name)} is blacklisted and will not be loaded${
+					typeof blacklistReason === 'string' ? `. Reason: ${blacklistReason}` : ''
+				}`)
+				return null
+			}
 		}
 
 		let conflictPkg
@@ -344,7 +351,8 @@ class ModManager {
 	preloadMod(name) {
 		if(this.brokenMods.has(name)) return false
 		try {
-			if(typeof require(this.resolve(name)) !== 'function') throw Error('Mod does not export a constructor')
+			if(typeof (this.packages.get(name)._compat === 2 ? compat.require : require)(this.resolve(name)) !== 'function')
+				throw Error('Mod does not export a constructor')
 			return true
 		}
 		catch(e) {
@@ -392,17 +400,15 @@ async function ensureDirs(base, files) {
 }
 
 // TODO: Move to constructor options
-function isBlacklisted(name) {
-	return ['CaaliLogger', 'CaaliStateTracker'].includes(name)
-}
-
 function overrideUpdateUrl(url) {
 	const github = parseGithubUrl(url)
 	if(github) {
 		let [user, repo, branch = 'master'] = github
+		const orig = {user, repo}
 
-		if(user.toLowerCase() === 'caali-hackerman') {
+		if(['caali-hackerman', 'tera-toolbox', 'tera-toolbox-mods'].includes(user.toLowerCase())) {
 			switch(repo.toLowerCase()) {
+				// Replace compat forks with originals
 				case 'no-custom-loadingscreens':
 					repo = 'default-load-screens'
 				case 'bugfix':
@@ -422,11 +428,21 @@ function overrideUpdateUrl(url) {
 				case 'rk9guide':
 				case 'talents_info':
 					user = 'Owyn'; break
+
+				// Forks with DRM/anti-features removed
 				default:
 					user = 'tera-mods-forks'; break
 			}
 			branch = 'master'
 		}
+
+		// Replace compat fork with original
+		if(user.toLowerCase() === 'saltymonkey' && repo.toLowerCase() === 'skill-prediction') {
+			user = 'tera-mods'
+			branch = 'master'
+		}
+
+		if(user !== orig.user) log.info(`Switching to compatible fork: ${orig.user}/${orig.repo} > ${user}/${repo}`)
 
 		return `github:${user}/${repo}@${branch}`
 	}

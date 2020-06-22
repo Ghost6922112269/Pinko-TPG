@@ -2,7 +2,7 @@ const net = require('net')
 
 const Dispatch = require('./dispatch')
 const Encryption = require('./encryption')
-const PacketBuffer = require('../packetBuffer')
+const Packetizer = require('../packetizer')
 
 class Connection {
 	constructor(dispatch, info = {}) {
@@ -13,7 +13,12 @@ class Connection {
 
 		this.state = -1
 		this.session = new Encryption(this.info.classic)
-		this.buffer = new PacketBuffer()
+		this.packetizer = new Packetizer(data => {
+			if(this.dispatch) data = this.dispatch.handle(data, true)
+			if(data)
+				// Note: socket.write() is not thread-safe
+				this.sendClient(data.buffer === this.packetizer.buffer.buffer ? Buffer.from(data) : data)
+		})
 	}
 
 	connect(client, opt) {
@@ -58,17 +63,7 @@ class Connection {
 
 				case 2: {
 					this.session.encrypt(data)
-					this.buffer.write(data)
-
-					while(data = this.buffer.read()) {
-						if(this.dispatch) {
-							data = this.dispatch.handle(data, true)
-						}
-						if(data && this.client) {
-							this.sendClient(data)
-						}
-					}
-
+					this.packetizer.recv(data)
 					break
 				}
 
@@ -135,7 +130,7 @@ class Connection {
 		}
 
 		this.session = null
-		this.buffer = null
+		this.packetizer = null
 	}
 }
 
